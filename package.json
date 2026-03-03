@@ -1,0 +1,19 @@
+{
+  "name": "od11-remote",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "explore-symbols": "node explore-symbols.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@abandonware/noble": "^1.9.2-26",
+    "nuimojs": "^1.0.3",
+    "ws": "^8.19.0"
+  }
+}

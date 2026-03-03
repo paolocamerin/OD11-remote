@@ -1,0 +1,8 @@
+node_modules
+
+# Local config (contains your speaker IP)
+config.js
+
+# Logs (contain device IPs, MACs, UUIDs from your network)
+speaker.log
+symbol-log.txt
