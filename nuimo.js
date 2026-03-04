@@ -134,9 +134,37 @@ async function initialiseNuimo() {
         console.log('Scanning for Nuimo...');
     }
 
+    const CONNECT_TIMEOUT_MS = 10000;
+    const DISCOVER_TIMEOUT_MS = 10000;
+
     async function connect(device) {
-        await device.connectAsync();
-        const services = await device.discoverServicesAsync();
+        console.log('Connecting to Nuimo...');
+        try {
+            await Promise.race([
+                device.connectAsync(),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Connect timeout (10s)')), CONNECT_TIMEOUT_MS)
+                )
+            ]);
+            console.log('Connected. Discovering services...');
+        } catch (e) {
+            console.error('Connect failed:', e.message);
+            return;
+        }
+
+        let services;
+        try {
+            services = await Promise.race([
+                device.discoverServicesAsync(),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Service discovery timeout (10s)')), DISCOVER_TIMEOUT_MS)
+                )
+            ]);
+            console.log('Services found:', services.length);
+        } catch (e) {
+            console.error('Service discovery failed:', e.message);
+            return;
+        }
 
         for (const service of services) {
             const serviceUuid = normaliseUuid(service.uuid);

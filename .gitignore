@@ -1,7 +1,7 @@
 node_modules
 
-# Local config (contains your speaker IP)
-config.js
+# Optional local config override (speaker IP); use --ip=... instead
+config.local.js
 
 # Logs (contain device IPs, MACs, UUIDs from your network)
 speaker.log
