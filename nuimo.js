@@ -11,10 +11,26 @@ const noble = require('@abandonware/noble');
 const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
+const config = require('./config');
 
 const emitter = new EventEmitter();
 let ledCharacteristic = null;
 let batteryLevel = null;
+
+/** Log battery level with timestamp to battery.log every N ms */
+const BATTERY_LOG_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
+
+function formatTimestamp() {
+    return new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+}
+
+function logBattery(level) {
+    const line = formatTimestamp() + '  battery: ' + level + '%\n';
+    console.log('Battery:', level, '%');
+    if (config.batteryLog) {
+        fs.appendFileSync(path.join(__dirname, 'battery.log'), line);
+    }
+}
 
 // --- LED matrix encoding ---
 
@@ -106,8 +122,8 @@ const NUIMO_INPUT_UUIDS = [
     'f29b1526cb1940f3be5c7241ecb82fd2',  // fly
     'f29b1527cb1940f3be5c7241ecb82fd2',  // swipe
     'f29b1528cb1940f3be5c7241ecb82fd2',  // rotation
-    'f29b152bcb1940f3be5c7241ecb82fd2'   // touch
 ];
+
 
 function normaliseUuid(uuid) {
     return String(uuid).replace(/-/g, '').toLowerCase();
@@ -169,6 +185,7 @@ async function initialiseNuimo() {
         for (const service of services) {
             const serviceUuid = normaliseUuid(service.uuid);
             const characteristics = await service.discoverCharacteristicsAsync();
+            if (config.debug) console.log('Service:', serviceUuid, '— characteristics:', characteristics.map(c => normaliseUuid(c.uuid) + '[' + c.properties.join(',') + ']').join(', '));
 
             for (const ch of characteristics) {
                 const uuid = normaliseUuid(ch.uuid);
@@ -177,7 +194,16 @@ async function initialiseNuimo() {
                 if (uuid === '2a19') {
                     const battery = await ch.readAsync();
                     batteryLevel = battery[0];
-                    console.log('Battery:', batteryLevel, '%');
+                    logBattery(batteryLevel);
+                    setInterval(async () => {
+                        try {
+                            const b = await ch.readAsync();
+                            batteryLevel = b[0];
+                            logBattery(batteryLevel);
+                        } catch (e) {
+                            console.log('Battery read error:', e.message);
+                        }
+                    }, BATTERY_LOG_INTERVAL_MS);
                     continue;
                 }
 
@@ -186,6 +212,15 @@ async function initialiseNuimo() {
                     (serviceUuid === LED_MATRIX_SERVICE_UUID && ch.properties.includes('write'))) {
                     ledCharacteristic = ch;
                     emitter.emit('ledReady');
+                    // Periodically write a visible pattern to confirm writes reach the Nuimo
+                    setInterval(async () => {
+                        try {
+                            await writeMatrix(ch, new Array(81).fill(0), 0, 0);
+                            if (config.debug) console.log('Nuimo keepalive sent');
+                        } catch (e) {
+                            console.log('Nuimo keepalive error:', e.message);
+                        }
+                    }, 60000);
                     continue;
                 }
 
@@ -201,7 +236,7 @@ async function initialiseNuimo() {
                         if (data.length === 1) {
                             const evt = data[0] === 1 ? 'press' : 'release';
                             emitter.emit(evt);
-                            console.log(evt === 'press' ? 'Button pressed' : 'Button released');
+                            if (config.debug) console.log(evt === 'press' ? 'Button pressed' : 'Button released');
                         } else {
                             const direction = data.readInt16LE(0) > 0 ? 1 : -1;
                             emitter.emit('rotate', direction);

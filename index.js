@@ -8,6 +8,7 @@
 
 const nuimo = require('./nuimo');
 const speaker = require('./speaker');
+const { debug } = require('./config');
 
 nuimo.initialiseNuimo();
 speaker.initialiseSpeaker();
@@ -46,19 +47,22 @@ speaker.speakerEmitter.on('volumeChange', ({ vol, max }) => {
 nuimo.emitter.on('rotate', (direction) => {
     if (symbolExplorationMode) {
         symbolIndex = Math.max(0, Math.min(SYMBOL_MAX, symbolIndex + direction));
-        console.log('Symbol index:', symbolIndex);
+        if (debug) console.log('Symbol index:', symbolIndex);
         if (ledReady) nuimo.setBuiltinSymbol(symbolIndex);
     } else {
         surrogateVolume = Math.max(0, Math.min(surrogateMax, surrogateVolume + direction * VOLUME_STEP));
-        console.log('Volume:', surrogateVolume, '/', surrogateMax);
+        if (debug) console.log('Volume:', surrogateVolume, '/', surrogateMax);
         updateDisplay();
         speaker.changeVolume(direction * VOLUME_STEP);
     }
 });
 
 function updateDisplay() {
-    if (!ledReady || !volumeInitialised || symbolExplorationMode) return;
+    if (!ledReady) { if (debug) console.log('[updateDisplay] blocked: ledReady=false'); return; }
+    if (!volumeInitialised) { if (debug) console.log('[updateDisplay] blocked: volumeInitialised=false'); return; }
+    if (symbolExplorationMode) return;
     const displayValue = Math.min(99, Math.round(surrogateVolume));
+    if (debug) console.log('[updateDisplay] showing', displayValue);
     nuimo.setVolumeNumber(displayValue);
 }
 

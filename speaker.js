@@ -105,7 +105,10 @@ function initialiseSpeaker() {
  * @param {number} amount - Delta to apply (+/-)
  */
 function changeVolume(amount) {
-    if (!socket || socket.readyState !== ws.OPEN) return;
+    if (!socket || socket.readyState !== ws.OPEN) {
+        console.log('[changeVolume] blocked: socket not open (readyState=' + (socket ? socket.readyState : 'null') + ')');
+        return;
+    }
     socket.send(JSON.stringify({
         amount: amount,
         action: 'group_change_volume'
