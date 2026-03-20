@@ -1,38 +1,85 @@
 /**
- * OD-11 remote: Nuimo controller + speaker integration.
+ * OD-11 remote: Nuimo controller + OD-11 speaker integration.
  *
- * - Volume mode: rotate = volume, button = battery.
- * - Symbol exploration mode: rotate = cycle built-in symbols, button = back to volume.
- *   Toggle: long press (hold 1s) to switch modes.
+ * Interaction model:
+ *   - On connect:       powerOnMatrix (2s) → volume display
+ *   - Rotate:           volume up/down
+ *   - Short press:      toggle play/pause; show play/pause icon
+ *   - Long press ≥600ms: show battery icon (1.5s) → battery level number
+ *   - 5-min idle:       first button press shows diamond, skips play/pause
+ *   - Touch/swipe/fly:  show feedback icon (no functional effect)
+ *   - --debug mode:     longTouchBottom toggles pattern browser
+ *                         (rotate cycles patterns, longTouchBottom again exits)
  */
 
 const nuimo = require('./nuimo');
 const speaker = require('./speaker');
-const { debug } = require('./config');
+const config = require('./config');
+const { PATTERNS, PATTERNS_BY_NAME } = require('./patterns');
 
 nuimo.initialiseNuimo();
 speaker.initialiseSpeaker();
+
+// ── State ──────────────────────────────────────────────────────────────────
 
 let surrogateVolume = 0;
 let surrogateMax = 100;
 let volumeInitialised = false;
 let ledReady = false;
 
-/** Volume mode (default) vs symbol exploration mode */
-let symbolExplorationMode = false;
-
-/** Volume change step per Nuimo rotation tick */
 const VOLUME_STEP = 1;
 
-/** Symbol index range for exploration (0–SYMBOL_MAX) */
-const SYMBOL_MAX = 99;
-let symbolIndex = 0;
+/** Timestamp of last user interaction (for 5-min idle detection) */
+let lastInteractionTime = Date.now();
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Long-press threshold (ms) to toggle symbol mode */
-const LONG_PRESS_MS = 1000;
-let pressTimer = null;
+/** Long-press threshold */
+const LONG_PRESS_MS = 600;
+let buttonPressTime = null;
 
-// Keep surrogate in sync with speaker
+/** Pattern browser (debug mode only) */
+let patternBrowserActive = false;
+let patternBrowserIndex = 0;
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function p(name) {
+    const pat = PATTERNS_BY_NAME[name];
+    return pat ? pat.leds : null;
+}
+
+/**
+ * Show a temporary feedback pattern. Expires via Nuimo's own matrix timeout.
+ * @param {number[]|null} leds - 81-element array; if null, ignored
+ */
+function showFeedback(leds) {
+    if (!ledReady || !leds) return;
+    nuimo.setMatrix(leds);
+}
+
+/**
+ * Refresh the Nuimo display based on current app state.
+ */
+function updateDisplay() {
+    if (!ledReady) return;
+    if (patternBrowserActive) {
+        nuimo.setMatrix(PATTERNS[patternBrowserIndex].leds);
+        return;
+    }
+    if (!volumeInitialised) return;
+    nuimo.setVolumeNumber(Math.min(99, Math.round(surrogateVolume)));
+}
+
+function markInteraction() {
+    lastInteractionTime = Date.now();
+}
+
+function isIdle() {
+    return (Date.now() - lastInteractionTime) >= IDLE_TIMEOUT_MS;
+}
+
+// ── Speaker sync ───────────────────────────────────────────────────────────
+
 speaker.speakerEmitter.on('volumeChange', ({ vol, max }) => {
     if (!volumeInitialised) {
         volumeInitialised = true;
@@ -40,66 +87,130 @@ speaker.speakerEmitter.on('volumeChange', ({ vol, max }) => {
     }
     surrogateVolume = vol;
     surrogateMax = max;
-    updateDisplay();
 });
 
-// Nuimo rotation
-nuimo.emitter.on('rotate', (direction) => {
-    if (symbolExplorationMode) {
-        symbolIndex = Math.max(0, Math.min(SYMBOL_MAX, symbolIndex + direction));
-        if (debug) console.log('Symbol index:', symbolIndex);
-        if (ledReady) nuimo.setBuiltinSymbol(symbolIndex);
-    } else {
-        surrogateVolume = Math.max(0, Math.min(surrogateMax, surrogateVolume + direction * VOLUME_STEP));
-        if (debug) console.log('Volume:', surrogateVolume, '/', surrogateMax);
-        updateDisplay();
-        speaker.changeVolume(direction * VOLUME_STEP);
-    }
-});
-
-function updateDisplay() {
-    if (!ledReady) { if (debug) console.log('[updateDisplay] blocked: ledReady=false'); return; }
-    if (!volumeInitialised) { if (debug) console.log('[updateDisplay] blocked: volumeInitialised=false'); return; }
-    if (symbolExplorationMode) return;
-    const displayValue = Math.min(99, Math.round(surrogateVolume));
-    if (debug) console.log('[updateDisplay] showing', displayValue);
-    nuimo.setVolumeNumber(displayValue);
-}
+// ── Nuimo LED ready ────────────────────────────────────────────────────────
 
 nuimo.emitter.on('ledReady', () => {
     ledReady = true;
     console.log('Nuimo LED ready');
-    updateDisplay();
+    // Show power-on symbol for 2s then switch to volume
+    showFeedback(p('powerOnMatrix'));
 });
 
-// Button: short press = battery (volume mode) or exit symbol mode; long press = toggle mode
+// ── Rotate ─────────────────────────────────────────────────────────────────
+
+nuimo.emitter.on('rotate', (direction) => {
+    markInteraction();
+
+    if (patternBrowserActive) {
+        patternBrowserIndex = Math.max(0, Math.min(PATTERNS.length - 1, patternBrowserIndex + direction));
+        console.log('Pattern browser:', PATTERNS[patternBrowserIndex].name, '(' + patternBrowserIndex + ')');
+        updateDisplay();
+        return;
+    }
+
+    surrogateVolume = Math.max(0, Math.min(surrogateMax, surrogateVolume + direction * VOLUME_STEP));
+    if (config.debug) console.log('Volume:', surrogateVolume, '/', surrogateMax);
+    nuimo.setVolumeNumber(Math.min(99, Math.round(surrogateVolume)));
+    speaker.changeVolume(direction * VOLUME_STEP);
+});
+
+// ── Button ─────────────────────────────────────────────────────────────────
+
 nuimo.emitter.on('press', () => {
-    pressTimer = setTimeout(() => {
-        pressTimer = null;
-        symbolExplorationMode = !symbolExplorationMode;
-        console.log(symbolExplorationMode ? 'Symbol exploration mode ON' : 'Symbol exploration mode OFF');
-        if (symbolExplorationMode && ledReady) {
-            nuimo.setBuiltinSymbol(symbolIndex);
-        } else {
-            updateDisplay();
-        }
-    }, LONG_PRESS_MS);
+    buttonPressTime = Date.now();
 });
 
 nuimo.emitter.on('release', () => {
-    if (pressTimer) {
-        clearTimeout(pressTimer);
-        pressTimer = null;
-        if (!symbolExplorationMode) {
-            const battery = nuimo.getBatteryLevel();
-            if (battery != null && ledReady) {
-                console.log('Battery:', battery, '%');
-                nuimo.setVolumeNumber(Math.min(99, battery));
-            }
+    if (buttonPressTime === null) return;
+    const held = Date.now() - buttonPressTime;
+    buttonPressTime = null;
+    markInteraction();
+
+    if (held >= LONG_PRESS_MS) {
+        // Long press → show battery icon (1.5s) → battery number (1.5s) → volume
+        const battery = nuimo.getBatteryLevel();
+        console.log('Battery:', battery, '%');
+        if (!ledReady) return;
+        nuimo.setMatrix(p('battery'));
+        setTimeout(() => {
+            if (!ledReady) return;
+            nuimo.setVolumeNumber(Math.min(99, battery != null ? battery : 0));
+        }, 1500);
+    } else {
+        // Short press
+        if (isIdle()) {
+            // Waking from idle: show diamond, skip play/pause this press
+            console.log('Woke from idle — showing diamond');
+            showFeedback(p('diamond'));
+            return;
+        }
+        // Toggle play/pause
+        const newPlaying = speaker.togglePlayPause();
+        if (newPlaying === null) {
+            // Source doesn't support pause — show question mark as feedback
+            showFeedback(p('questionMarkMatrix'));
         } else {
-            symbolExplorationMode = false;
-            console.log('Symbol exploration mode OFF (short release)');
-            updateDisplay();
+            console.log('Playback:', newPlaying ? 'playing' : 'paused');
+            showFeedback(p(newPlaying ? 'playMatrix' : 'pauseMatrix'));
         }
     }
+});
+
+// ── Touch / swipe feedback ─────────────────────────────────────────────────
+
+nuimo.emitter.on('swipe', (gesture) => {
+    markInteraction();
+    const iconMap = {
+        swipeLeft:  'swipeLeft',
+        swipeRight: 'swipeRight',
+        swipeUp:    'swipeUp',
+        swipeDown:  'swipeDown',
+    };
+    showFeedback(p(iconMap[gesture] || 'questionMarkMatrix'));
+});
+
+nuimo.emitter.on('touch', (gesture) => {
+    markInteraction();
+    if (config.debug) {
+        // longTouchBottom toggles pattern browser
+        if (gesture === 'longTouchBottom') {
+            patternBrowserActive = !patternBrowserActive;
+            console.log('Pattern browser:', patternBrowserActive ? 'ON' : 'OFF');
+            if (patternBrowserActive) {
+                patternBrowserIndex = 0;
+                nuimo.setMatrix(PATTERNS[patternBrowserIndex].leds);
+            } else {
+                updateDisplay();
+            }
+            return;
+        }
+    }
+    if (patternBrowserActive) return; // suppress other touch feedback in browser
+
+    const iconMap = {
+        touchLeft:      'touchLeft',
+        touchRight:     'touchRight',
+        touchTop:       'touchTop',
+        touchBottom:    'touchBottom',
+        longTouchLeft:  'longTouchLeft',
+        longTouchRight: 'longTouchRight',
+        longTouchTop:   'longTouchTop',
+        longTouchBottom:'longTouchBottom',
+    };
+    showFeedback(p(iconMap[gesture] || 'questionMarkMatrix'));
+});
+
+// ── Fly feedback ───────────────────────────────────────────────────────────
+
+nuimo.emitter.on('fly', (dir) => {
+    markInteraction();
+    if (patternBrowserActive) return;
+    const iconMap = {
+        left:   'flyLeft',
+        right:  'flyRight',
+        updown: 'flyProximity',
+    };
+    showFeedback(p(iconMap[dir] || 'questionMarkMatrix'));
 });

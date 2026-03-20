@@ -16,6 +16,10 @@ const config = require('./config');
 const emitter = new EventEmitter();
 let ledCharacteristic = null;
 let batteryLevel = null;
+let batteryInterval = null;
+let firmwareVersion = null;
+
+const RECONNECT_DELAY_MS = 5000;
 
 /** Log battery level with timestamp to battery.log every N ms */
 const BATTERY_LOG_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
@@ -131,9 +135,21 @@ function normaliseUuid(uuid) {
 
 async function initialiseNuimo() {
     noble.on('stateChange', function (state) {
+        console.log('Bluetooth:', state);
         if (state === 'poweredOn') {
-            start();
-            console.log('Bluetooth:', state);
+            // Delay scan slightly — gives peripheral time to detect the
+            // disconnection (e.g. after laptop sleep/wake) and start advertising
+            setTimeout(start, 3000);
+        } else {
+            // BT adapter went away (sleep, lock, disable) — clean up so we
+            // don't keep a stale ledCharacteristic from a dead connection
+            if (ledCharacteristic) {
+                ledCharacteristic = null;
+                clearInterval(batteryInterval);
+                batteryInterval = null;
+                emitter.emit('disconnect');
+                console.log('Bluetooth unavailable — connection cleared');
+            }
         }
     });
 
@@ -190,12 +206,35 @@ async function initialiseNuimo() {
             for (const ch of characteristics) {
                 const uuid = normaliseUuid(ch.uuid);
 
+                // Hardware version (device info service)
+                if (uuid === '2a27') {
+                    try {
+                        const hw = await ch.readAsync();
+                        console.log('Hardware version:', hw.toString('utf8').trim());
+                    } catch (e) {
+                        console.log('Hardware version read error:', e.message);
+                    }
+                    continue;
+                }
+
+                // Firmware version (device info service)
+                if (uuid === '2a26') {
+                    try {
+                        const fw = await ch.readAsync();
+                        firmwareVersion = fw.toString('utf8').trim();
+                        console.log('Firmware version:', firmwareVersion);
+                    } catch (e) {
+                        console.log('Firmware read error:', e.message);
+                    }
+                    continue;
+                }
+
                 // Battery level
                 if (uuid === '2a19') {
                     const battery = await ch.readAsync();
                     batteryLevel = battery[0];
                     logBattery(batteryLevel);
-                    setInterval(async () => {
+                    batteryInterval = setInterval(async () => {
                         try {
                             const b = await ch.readAsync();
                             batteryLevel = b[0];
@@ -212,15 +251,6 @@ async function initialiseNuimo() {
                     (serviceUuid === LED_MATRIX_SERVICE_UUID && ch.properties.includes('write'))) {
                     ledCharacteristic = ch;
                     emitter.emit('ledReady');
-                    // Periodically write a visible pattern to confirm writes reach the Nuimo
-                    setInterval(async () => {
-                        try {
-                            await writeMatrix(ch, new Array(81).fill(0), 0, 0);
-                            if (config.debug) console.log('Nuimo keepalive sent');
-                        } catch (e) {
-                            console.log('Nuimo keepalive error:', e.message);
-                        }
-                    }, 60000);
                     continue;
                 }
 
@@ -232,12 +262,33 @@ async function initialiseNuimo() {
                         console.log('Subscribe error:', e.message);
                         continue;
                     }
+                    const charUuid = normaliseUuid(ch.uuid);
                     ch.on('data', function (data) {
-                        if (data.length === 1) {
+                        if (config.debug) {
+                            const hex = [...data].map(b => b.toString(16).padStart(2, '0')).join(' ');
+                            console.log('DATA', charUuid.slice(-8), '[' + hex + ']');
+                        }
+                        if (charUuid === 'f29b1526cb1940f3be5c7241ecb82fd2') {
+                            // Fly/wave gesture: byte 0 = direction (0=left, 1=right, 4=updown), byte 1 = speed
+                            const dir = data[0] === 0 ? 'left' : data[0] === 1 ? 'right' : 'updown';
+                            const speed = data[1] || 0;
+                            emitter.emit('fly', dir, speed);
+                        } else if (charUuid === 'f29b1527cb1940f3be5c7241ecb82fd2') {
+                            // Touch/swipe ring: 0=swipe left, 1=swipe right, 2=swipe up, 3=swipe down,
+                            // 4-7=touch L/R/T/B, 8-11=long touch L/R/T/B
+                            const SWIPE = ['swipeLeft', 'swipeRight', 'swipeUp', 'swipeDown'];
+                            const TOUCH = ['touchLeft', 'touchRight', 'touchTop', 'touchBottom'];
+                            const LONG  = ['longTouchLeft', 'longTouchRight', 'longTouchTop', 'longTouchBottom'];
+                            const v = data[0];
+                            if (v < 4)       emitter.emit('swipe', SWIPE[v]);
+                            else if (v < 8)  emitter.emit('touch', TOUCH[v - 4]);
+                            else if (v < 12) emitter.emit('touch', LONG[v - 8]);
+                            if (config.debug) console.log('Touch/swipe:', v);
+                        } else if (charUuid === 'f29b1529cb1940f3be5c7241ecb82fd2') {
                             const evt = data[0] === 1 ? 'press' : 'release';
                             emitter.emit(evt);
-                            if (config.debug) console.log(evt === 'press' ? 'Button pressed' : 'Button released');
                         } else {
+                            // Rotation: Int16LE signed
                             const direction = data.readInt16LE(0) > 0 ? 1 : -1;
                             emitter.emit('rotate', direction);
                         }
@@ -245,6 +296,22 @@ async function initialiseNuimo() {
                 }
             }
         }
+
+        device.once('disconnect', function () {
+            console.log('Nuimo disconnected. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
+            ledCharacteristic = null;
+            clearInterval(batteryInterval);
+            batteryInterval = null;
+            emitter.emit('disconnect');
+            setTimeout(() => {
+                // Only scan if BT is powered on — if not, stateChange→poweredOn will call start()
+                if (noble.state === 'poweredOn') {
+                    noble.startScanningAsync().catch(e => console.log('Scan error:', e.message));
+                } else {
+                    console.log('BT not ready, scan deferred until poweredOn');
+                }
+            }, RECONNECT_DELAY_MS);
+        });
     }
 }
 
@@ -299,4 +366,19 @@ async function setBuiltinSymbol(index) {
     fs.appendFileSync(path.join(__dirname, 'symbol-log.txt'), line);
 }
 
-module.exports = { initialiseNuimo, emitter, setVolumeBar, setVolumeNumber, getBatteryLevel, setBuiltinSymbol };
+/**
+ * Write an arbitrary 81-element matrix array to the Nuimo.
+ * @param {number[]} matrixArray - 81 elements, 0 or 1
+ * @param {number} [brightness=0xff]
+ * @param {number} [timeoutMs=MATRIX_TIMEOUT_MS]
+ */
+async function setMatrix(matrixArray, brightness = 0xff, timeoutMs = MATRIX_TIMEOUT_MS) {
+    if (!ledCharacteristic) return;
+    await writeMatrix(ledCharacteristic, matrixArray, brightness, timeoutMs);
+}
+
+function getFirmwareVersion() {
+    return firmwareVersion;
+}
+
+module.exports = { initialiseNuimo, emitter, setVolumeBar, setVolumeNumber, setMatrix, getBatteryLevel, setBuiltinSymbol, getFirmwareVersion };
