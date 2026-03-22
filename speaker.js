@@ -19,8 +19,6 @@ let pingInterval = null;
 let isPlaying = false;
 let currentSourceId = null;
 let sourcesMap = {};
-let lastCommandTime = 0;
-const PLAYBACK_COOLDOWN_MS = 3000;
 
 const RECONNECT_DELAY_MS = 5000;
 
@@ -116,10 +114,6 @@ function parseUpdate(item) {
         speakerEmitter.emit('volumeChange', { vol: currentVolume, max: maxVolume });
     }
     if (item.update === 'playback_state_changed' && typeof item.playing === 'boolean') {
-        if (Date.now() - lastCommandTime < PLAYBACK_COOLDOWN_MS) {
-            console.log('[speaker] playback_state_changed (cooldown, ignored):', item.playing);
-            return;
-        }
         console.log('[speaker] playback_state_changed:', item.playing);
         isPlaying = item.playing;
         speakerEmitter.emit('playbackChange', { playing: isPlaying });
@@ -193,8 +187,7 @@ function togglePlayPause() {
     const payload = { action };
     console.log('[togglePlayPause] sending:', JSON.stringify(payload), '(was isPlaying=' + isPlaying + ')');
     socket.send(JSON.stringify(payload));
-    isPlaying = newPlaying;
-    lastCommandTime = Date.now();
+    isPlaying = newPlaying; // optimistic — overridden by next playback_state_changed from speaker
     return newPlaying;
 }
 
@@ -215,4 +208,21 @@ function getSources() {
     return sourcesMap;
 }
 
-module.exports = { initialiseSpeaker, changeVolume, getVolume, getIsPlaying, togglePlayPause, setInputSource, getSources, speakerEmitter };
+/**
+ * Get the current source id, or null if unknown.
+ * @returns {number|null}
+ */
+function getCurrentSourceId() {
+    return currentSourceId;
+}
+
+/**
+ * Returns true if the current source supports pause (i.e. is not optical/line-in/bluetooth).
+ * @returns {boolean}
+ */
+function canCurrentSourcePause() {
+    const src = currentSourceId !== null ? sourcesMap[currentSourceId] : null;
+    return src ? src.supports_pause !== false : true;
+}
+
+module.exports = { initialiseSpeaker, changeVolume, getVolume, getIsPlaying, togglePlayPause, setInputSource, getSources, getCurrentSourceId, canCurrentSourcePause, speakerEmitter };

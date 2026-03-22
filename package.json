@@ -13,6 +13,7 @@
   "type": "commonjs",
   "dependencies": {
     "@abandonware/noble": "^1.9.2-26",
+    "@sebbo2002/node-pyatv": "^9.0.2",
     "nuimojs": "^1.0.3",
     "ws": "^8.19.0"
   }

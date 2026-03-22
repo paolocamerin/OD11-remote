@@ -6,6 +6,7 @@ NUIMO_BEHAVIOR_v2.md
 GESTURE_MAP.md
 NUIMO_SPEC.md
 test-patterns.js
+test-atv-direct.js
 
 # Optional local config override (speaker IP); use --ip=... instead
 config.local.js

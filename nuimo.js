@@ -134,15 +134,18 @@ function normaliseUuid(uuid) {
 }
 
 async function initialiseNuimo() {
+    let scanTimer = null;
+
     noble.on('stateChange', function (state) {
         console.log('Bluetooth:', state);
         if (state === 'poweredOn') {
             // Delay scan slightly — gives peripheral time to detect the
             // disconnection (e.g. after laptop sleep/wake) and start advertising
-            setTimeout(start, 3000);
+            scanTimer = setTimeout(start, 3000);
         } else {
-            // BT adapter went away (sleep, lock, disable) — clean up so we
-            // don't keep a stale ledCharacteristic from a dead connection
+            // Cancel any pending scan — BT went away before the timer fired
+            if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
+            // Clean up stale connection state
             if (ledCharacteristic) {
                 ledCharacteristic = null;
                 clearInterval(batteryInterval);
@@ -162,8 +165,16 @@ async function initialiseNuimo() {
     });
 
     async function start() {
-        await noble.startScanningAsync();
-        console.log('Scanning for Nuimo...');
+        if (noble.state !== 'poweredOn') {
+            console.log('Scan skipped — BT state is', noble.state);
+            return;
+        }
+        try {
+            await noble.startScanningAsync();
+            console.log('Scanning for Nuimo...');
+        } catch (e) {
+            console.log('Scan error:', e.message);
+        }
     }
 
     const CONNECT_TIMEOUT_MS = 10000;

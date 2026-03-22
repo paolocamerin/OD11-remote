@@ -36,8 +36,9 @@ if (!speakerIp) {
 
 const batteryLog = hasFlag('--battery-log');
 const debug = hasFlag('--debug');
+const atvName = getArg('--atv-name');
 
-const KNOWN_ARGS = ['--ip', '--battery-log', '--debug'];
+const KNOWN_ARGS = ['--ip', '--battery-log', '--debug', '--atv-name'];
 for (const arg of args) {
     const argName = arg.startsWith('--') ? arg.split('=')[0] : null;
     if (argName && !KNOWN_ARGS.includes(argName)) {
@@ -45,4 +46,4 @@ for (const arg of args) {
     }
 }
 
-module.exports = { speakerIp, batteryLog, debug };
+module.exports = { speakerIp, batteryLog, debug, atvName };

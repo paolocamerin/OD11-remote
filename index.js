@@ -37,6 +37,9 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const LONG_PRESS_MS = 600;
 let buttonPressTime = null;
 
+/** First press after connect/reconnect is always a wake, not play/pause */
+let hasWoken = false;
+
 /** Pattern browser (debug mode only) */
 let patternBrowserActive = false;
 let patternBrowserIndex = 0;
@@ -78,6 +81,7 @@ function isIdle() {
     return (Date.now() - lastInteractionTime) >= IDLE_TIMEOUT_MS;
 }
 
+
 // ── Speaker sync ───────────────────────────────────────────────────────────
 
 speaker.speakerEmitter.on('volumeChange', ({ vol, max }) => {
@@ -93,8 +97,8 @@ speaker.speakerEmitter.on('volumeChange', ({ vol, max }) => {
 
 nuimo.emitter.on('ledReady', () => {
     ledReady = true;
+    hasWoken = false;
     console.log('Nuimo LED ready');
-    // Show power-on symbol for 2s then switch to volume
     showFeedback(p('powerOnMatrix'));
 });
 
@@ -139,17 +143,17 @@ nuimo.emitter.on('release', () => {
             nuimo.setVolumeNumber(Math.min(99, battery != null ? battery : 0));
         }, 1500);
     } else {
-        // Short press
-        if (isIdle()) {
-            // Waking from idle: show diamond, skip play/pause this press
-            console.log('Woke from idle — showing diamond');
+        // Short press — first press after connect or idle is always a wake
+        if (!hasWoken || isIdle()) {
+            hasWoken = true;
+            console.log('Wake press — showing diamond');
             showFeedback(p('diamond'));
             return;
         }
-        // Toggle play/pause
+        // Toggle play/pause — route based on source capabilities
         const newPlaying = speaker.togglePlayPause();
         if (newPlaying === null) {
-            // Source doesn't support pause — show question mark as feedback
+            // Source doesn't support pause (e.g. Optical) — Apple TV control pending
             showFeedback(p('questionMarkMatrix'));
         } else {
             console.log('Playback:', newPlaying ? 'playing' : 'paused');
@@ -162,6 +166,7 @@ nuimo.emitter.on('release', () => {
 
 nuimo.emitter.on('swipe', (gesture) => {
     markInteraction();
+
     const iconMap = {
         swipeLeft:  'swipeLeft',
         swipeRight: 'swipeRight',
