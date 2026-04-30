@@ -93,8 +93,8 @@ function connect() {
         fs.appendFileSync('speaker.log', data.toString() + '\n');
     });
 
-    socket.on('error', function () {
-        console.log('Speaker WebSocket error');
+    socket.on('error', function (err) {
+        console.log('Speaker WebSocket error:', err.message);
     });
 
     socket.on('close', function () {
