@@ -90,7 +90,7 @@ function connect() {
             }
         }
 
-        fs.appendFileSync('speaker.log', data.toString() + '\n');
+        if (config.debug) fs.appendFileSync('speaker.log', data.toString() + '\n');
     });
 
     socket.on('error', function (err) {
